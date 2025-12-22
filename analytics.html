@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bangkok Bank Analytics Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        
+        h1 {
+            color: #1a202c;
+            margin-bottom: 10px;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+        
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        
+        .stat-label {
+            font-size: 14px;
+            opacity: 0.9;
+            margin-bottom: 5px;
+        }
+        
+        .stat-value {
+            font-size: 28px;
+            font-weight: bold;
+        }
+        
+        .charts-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 20px;
+        }
+        
+        .chart-container {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        
+        .chart-title {
+            font-size: 20px;
+            font-weight: 600;
+            color: #1a202c;
+            margin-bottom: 20px;
+        }
+        
+        .chart-wrapper {
+            position: relative;
+            height: 400px;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: white;
+            font-size: 18px;
+        }
+        
+        .error {
+            background: #f56565;
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        
+        .config-section {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        
+        .config-section h3 {
+            margin-bottom: 15px;
+            color: #1a202c;
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+            color: #4a5568;
+        }
+        
+        .form-group input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #cbd5e0;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 500;
+        }
+        
+        .btn:hover {
+            opacity: 0.9;
+        }
+        
+        .recipients-table {
+            margin-top: 20px;
+            overflow-x: auto;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        
+        th {
+            background: #f7fafc;
+            font-weight: 600;
+            color: #2d3748;
+        }
+        
+        tr:hover {
+            background: #f7fafc;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="error-message"></div>
+        
+        <div class="config-section" id="config-section">
+            <h3>Database Configuration</h3>
+            <div class="form-group">
+                <label for="supabase-url">Supabase URL</label>
+                <input type="text" id="supabase-url" placeholder="https://your-project.supabase.co">
+            </div>
+            <div class="form-group">
+                <label for="supabase-key">Supabase Anon Key</label>
+                <input type="password" id="supabase-key" placeholder="Your anon/public key">
+            </div>
+            <button class="btn" onclick="connectAndLoad()">Connect & Load Data</button>
+        </div>
+        
+        <div id="content" style="display: none;">
+            <div class="header">
+                <h1>💰 Bangkok Bank Analytics Dashboard</h1>
+                <p style="color: #718096; margin-top: 5px;">Payment slip analysis and insights</p>
+                
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-label">Total Transactions</div>
+                        <div class="stat-value" id="total-transactions">-</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Total Amount</div>
+                        <div class="stat-value" id="total-amount">-</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Average Transaction</div>
+                        <div class="stat-value" id="avg-transaction">-</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Recipients</div>
+                        <div class="stat-value" id="total-recipients">-</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="charts-grid">
+                <div class="chart-container">
+                    <div class="chart-title">📅 Daily Spending (Last 30 Days)</div>
+                    <div class="chart-wrapper">
+                        <canvas id="daily-chart"></canvas>
+                    </div>
+                </div>
+                
+                <div class="chart-container">
+                    <div class="chart-title">📊 Monthly Spending</div>
+                    <div class="chart-wrapper">
+                        <canvas id="monthly-chart"></canvas>
+                    </div>
+                </div>
+                
+                <div class="chart-container">
+                    <div class="chart-title">📈 Yearly Spending</div>
+                    <div class="chart-wrapper">
+                        <canvas id="yearly-chart"></canvas>
+                    </div>
+                </div>
+                
+                <div class="chart-container">
+                    <div class="chart-title">👥 Top 10 Recipients by Total Amount</div>
+                    <div class="chart-wrapper">
+                        <canvas id="recipients-chart"></canvas>
+                    </div>
+                </div>
+                
+                <div class="chart-container">
+                    <div class="chart-title">🏷️ Top Categories (by Note)</div>
+                    <div class="recipients-table">
+                        <table id="notes-table">
+                            <thead>
+                                <tr>
+                                    <th>Category/Note</th>
+                                    <th>Count</th>
+                                    <th>Total Amount (THB)</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="loading" id="loading">Loading data...</div>
+    </div>
+
+    <script>
+        const { createClient } = supabase;
+        let supabaseClient = null;
+        
+        function showError(message) {
+            const errorDiv = document.getElementById('error-message');
+            errorDiv.innerHTML = `<div class="error">${message}</div>`;
+            setTimeout(() => errorDiv.innerHTML = '', 5000);
+        }
+        
+        async function connectAndLoad() {
+            const url = document.getElementById('supabase-url').value.trim();
+            const key = document.getElementById('supabase-key').value.trim();
+            
+            if (!url || !key) {
+                showError('Please enter both Supabase URL and Anon Key');
+                return;
+            }
+            
+            try {
+                supabaseClient = createClient(url, key);
+                
+                // Test connection
+                const { data, error } = await supabaseClient
+                    .from('payment_slips')
+                    .select('id')
+                    .limit(1);
+                
+                if (error) throw error;
+                
+                // Hide config, show content
+                document.getElementById('config-section').style.display = 'none';
+                document.getElementById('content').style.display = 'block';
+                document.getElementById('loading').style.display = 'block';
+                
+                await loadData();
+            } catch (error) {
+                showError('Connection failed: ' + error.message);
+            }
+        }
+        
+        async function loadData() {
+            try {
+                const { data, error } = await supabaseClient
+                    .from('payment_slips')
+                    .select('date_time, amount_thb, recipient, note');
+                
+                if (error) throw error;
+                
+                document.getElementById('loading').style.display = 'none';
+                
+                // Process data
+                processData(data);
+            } catch (error) {
+                showError('Failed to load data: ' + error.message);
+                document.getElementById('loading').textContent = 'Error loading data';
+            }
+        }
+        
+        function processData(data) {
+            // Filter valid records
+            const validData = data.filter(r => r.date_time && r.amount_thb);
+            
+            // Stats
+            const total = validData.length;
+            const totalAmount = validData.reduce((sum, r) => sum + parseFloat(r.amount_thb), 0);
+            const avgAmount = totalAmount / total;
+            const uniqueRecipients = new Set(validData.filter(r => r.recipient).map(r => r.recipient)).size;
+            
+            document.getElementById('total-transactions').textContent = total.toLocaleString();
+            document.getElementById('total-amount').textContent = '฿' + totalAmount.toLocaleString('en-US', { maximumFractionDigits: 0 });
+            document.getElementById('avg-transaction').textContent = '฿' + avgAmount.toLocaleString('en-US', { maximumFractionDigits: 0 });
+            document.getElementById('total-recipients').textContent = uniqueRecipients.toLocaleString();
+            
+            // Charts
+            createDailyChart(validData);
+            createMonthlyChart(validData);
+            createYearlyChart(validData);
+            createRecipientsChart(validData);
+            createNotesTable(validData);
+        }
+        
+        function createDailyChart(data) {
+            const last30Days = new Date();
+            last30Days.setDate(last30Days.getDate() - 30);
+            
+            const dailyData = {};
+            data.forEach(record => {
+                const date = new Date(record.date_time);
+                if (date >= last30Days) {
+                    const dateStr = date.toISOString().split('T')[0];
+                    dailyData[dateStr] = (dailyData[dateStr] || 0) + parseFloat(record.amount_thb);
+                }
+            });
+            
+            const sortedDates = Object.keys(dailyData).sort();
+            const amounts = sortedDates.map(date => dailyData[date]);
+            
+            new Chart(document.getElementById('daily-chart'), {
+                type: 'bar',
+                data: {
+                    labels: sortedDates.map(d => new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })),
+                    datasets: [{
+                        label: 'Amount (THB)',
+                        data: amounts,
+                        backgroundColor: 'rgba(102, 126, 234, 0.6)',
+                        borderColor: 'rgba(102, 126, 234, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                callback: value => '฿' + value.toLocaleString()
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        function createMonthlyChart(data) {
+            const monthlyData = {};
+            data.forEach(record => {
+                const date = new Date(record.date_time);
+                const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+                monthlyData[monthKey] = (monthlyData[monthKey] || 0) + parseFloat(record.amount_thb);
+            });
+            
+            const sortedMonths = Object.keys(monthlyData).sort();
+            const amounts = sortedMonths.map(month => monthlyData[month]);
+            
+            new Chart(document.getElementById('monthly-chart'), {
+                type: 'bar',
+                data: {
+                    labels: sortedMonths.map(m => {
+                        const [year, month] = m.split('-');
+                        return new Date(year, month - 1).toLocaleDateString('en-US', { year: 'numeric', month: 'short' });
+                    }),
+                    datasets: [{
+                        label: 'Amount (THB)',
+                        data: amounts,
+                        backgroundColor: 'rgba(118, 75, 162, 0.6)',
+                        borderColor: 'rgba(118, 75, 162, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                callback: value => '฿' + value.toLocaleString()
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        function createYearlyChart(data) {
+            const yearlyData = {};
+            
+            // Categorize each transaction
+            data.forEach(record => {
+                const year = new Date(record.date_time).getFullYear();
+                const amount = parseFloat(record.amount_thb);
+                
+                if (!yearlyData[year]) {
+                    yearlyData[year] = { makro: 0, salary: 0, other: 0 };
+                }
+                
+                // Check if it's a Makro transaction
+                const isMakro = record.recipient && (
+                    record.recipient.toLowerCase().includes('makro') ||
+                    record.recipient.includes('ซีพี แอ็กซ์ตร้า') ||
+                    record.recipient.includes('CP AXTRA') ||
+                    (record.note && record.note.toLowerCase().includes('makro'))
+                );
+                
+                // Check if it's a salary transaction
+                const isSalary = record.note && record.note.toLowerCase().includes('salary');
+                
+                if (isMakro) {
+                    yearlyData[year].makro += amount;
+                } else if (isSalary) {
+                    yearlyData[year].salary += amount;
+                } else {
+                    yearlyData[year].other += amount;
+                }
+            });
+            
+            const sortedYears = Object.keys(yearlyData).sort();
+            const makroAmounts = sortedYears.map(year => yearlyData[year].makro);
+            const salaryAmounts = sortedYears.map(year => yearlyData[year].salary);
+            const otherAmounts = sortedYears.map(year => yearlyData[year].other);
+            
+            new Chart(document.getElementById('yearly-chart'), {
+                type: 'bar',
+                data: {
+                    labels: sortedYears,
+                    datasets: [
+                        {
+                            label: 'Makro',
+                            data: makroAmounts,
+                            backgroundColor: 'rgba(245, 158, 11, 0.8)',
+                            borderColor: 'rgba(245, 158, 11, 1)',
+                            borderWidth: 1
+                        },
+                        {
+                            label: 'Salary',
+                            data: salaryAmounts,
+                            backgroundColor: 'rgba(59, 130, 246, 0.8)',
+                            borderColor: 'rgba(59, 130, 246, 1)',
+                            borderWidth: 1
+                        },
+                        {
+                            label: 'Other',
+                            data: otherAmounts,
+                            backgroundColor: 'rgba(52, 211, 153, 0.6)',
+                            borderColor: 'rgba(52, 211, 153, 1)',
+                            borderWidth: 1
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'top'
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return context.dataset.label + ': ฿' + context.parsed.y.toLocaleString();
+                                },
+                                footer: function(tooltipItems) {
+                                    const total = tooltipItems.reduce((sum, item) => sum + item.parsed.y, 0);
+                                    return 'Total: ฿' + total.toLocaleString();
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            stacked: true
+                        },
+                        y: {
+                            stacked: true,
+                            beginAtZero: true,
+                            ticks: {
+                                callback: value => '฿' + value.toLocaleString()
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        function createRecipientsChart(data) {
+            const recipientData = {};
+            data.filter(r => r.recipient).forEach(record => {
+                recipientData[record.recipient] = (recipientData[record.recipient] || 0) + parseFloat(record.amount_thb);
+            });
+            
+            const sorted = Object.entries(recipientData)
+                .sort(([,a], [,b]) => b - a)
+                .slice(0, 10);
+            
+            new Chart(document.getElementById('recipients-chart'), {
+                type: 'bar',
+                data: {
+                    labels: sorted.map(([name]) => name.length > 30 ? name.substring(0, 27) + '...' : name),
+                    datasets: [{
+                        label: 'Total Amount (THB)',
+                        data: sorted.map(([, amount]) => amount),
+                        backgroundColor: 'rgba(245, 158, 11, 0.6)',
+                        borderColor: 'rgba(245, 158, 11, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    indexAxis: 'y',
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        x: {
+                            beginAtZero: true,
+                            ticks: {
+                                callback: value => '฿' + value.toLocaleString()
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        function createNotesTable(data) {
+            const noteData = {};
+            data.filter(r => r.note).forEach(record => {
+                if (!noteData[record.note]) {
+                    noteData[record.note] = { count: 0, total: 0 };
+                }
+                noteData[record.note].count++;
+                noteData[record.note].total += parseFloat(record.amount_thb);
+            });
+            
+            const sorted = Object.entries(noteData)
+                .sort(([,a], [,b]) => b.total - a.total)
+                .slice(0, 15);
+            
+            const tbody = document.querySelector('#notes-table tbody');
+            tbody.innerHTML = sorted.map(([note, stats]) => `
+                <tr>
+                    <td>${note}</td>
+                    <td>${stats.count}</td>
+                    <td>฿${stats.total.toLocaleString('en-US', { maximumFractionDigits: 0 })}</td>
+                </tr>
+            `).join('');
+        }
+    </script>
+</body>
+</html>
