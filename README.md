@@ -3,9 +3,13 @@
 Automated processing of QR payment slips using Google Cloud Vision OCR.
 
 ## Overview
-This project processes 4,313+ Bangkok Bank transfer slip images, extracts structured data (date, amount, recipient, notes, transaction references), and stores them in Supabase for analysis.
+
+This project processes 4,313+ Bangkok Bank transfer slip images, extracts
+structured data (date, amount, recipient, notes, transaction references), and
+stores them in Supabase for analysis.
 
 ## Final Results
+
 - **4,209** unique payment slip records processed
 - **3,922** unique transactions identified
 - **38,792,806.86 THB** total processed (~$1.1M USD)
@@ -20,7 +24,9 @@ This project processes 4,313+ Bangkok Bank transfer slip images, extracts struct
 ## Files
 
 ### `process_bbl_slips.ts`
+
 Main TypeScript script that:
+
 - Reads Bangkok Bank slip images from a directory
 - Performs OCR using Google Cloud Vision API
 - **Advanced parsing** with multiple pattern matching:
@@ -37,7 +43,9 @@ Main TypeScript script that:
 - Inserts structured data into Supabase `payment_slips` table
 
 ### `dedupe_payment_slips.sql`
-SQL script to remove duplicate records based on unique transaction reference numbers.
+
+SQL script to remove duplicate records based on unique transaction reference
+numbers.
 
 ## Prerequisites
 
@@ -73,6 +81,7 @@ create table public.payment_slips (
 ## Usage
 
 ### Process slips:
+
 ```bash
 export SUPABASE_URL="https://your-project.supabase.co"
 export SUPABASE_SERVICE_ROLE_KEY="your-service-role-key"
@@ -84,50 +93,61 @@ npx ts-node --transpile-only --compiler-options '{"module":"commonjs"}' \
 ```
 
 ### Parameters:
+
 - `--dir`: Directory containing .jpg/.jpeg slip images
 - `--batch`: Number of files to process before logging progress (default: 50)
 
 ### Deduplicate records:
+
 Run `dedupe_payment_slips.sql` in Supabase SQL Editor after processing.
 
 ## Features
 
 ### Date Parsing
+
 Supports multiple Bangkok Bank date formats:
+
 - Modern: "23 Jun 24,18:03"
 - Older: "14 Feb 18, 18:37"
 - ISO: "2024-06-19 20:18"
 - Date only formats
 
 ### Amount Extraction
+
 Handles various amount representations:
+
 - "250.00 THB"
 - "THB 250.00"
 - "50,000.00"
 - Amount with ฿ symbol
 
 ### Recipient Name Detection (86.6% success rate)
+
 Supports multiple extraction patterns:
 
 **Bank Transfers:**
+
 - Prefix patterns: "ttb WITTHAYA SAEN", "Utb WEERAYUT SITT"
 - English names: "MR.MONTREE SITTEBUN", "MISSWI PARAT SAENGARUN"
 - Thai names: Supports Thai alphabet (ก-ฮ, ะ-์)
 - Title prefixes: MR., MS., MRS., MISS, DR., K., นาย, นาง, น.ส.
 
 **Bill Payments:**
+
 - Thai companies: "บริษัท ซีพี แอ็กซ์ตร้า จำกัด (มหาชน)" (CP Axtra/Makro)
 - Thai companies: "ทูซีทูพี (ประเทศไทย)" (2C2P Thailand)
 - English merchants: "STARBUCKS COFFEE", "K+ shop (PTT Station)"
 - Biller ID format: Extracts names before "Biller ID:" or "Service Code:"
 
 **Extraction Strategy:**
+
 1. Pattern matching for "ttb/utb/ub" prefixes + account numbers
 2. Thai text after bullet point (•) for bill payments
 3. Names between sender and recipient account numbers
 4. Fallback to line-by-line title detection
 
 ### Transaction Reference
+
 Extracts long numeric reference numbers (20-30 digits) used for deduplication.
 
 ## Error Handling
@@ -146,6 +166,7 @@ Extracts long numeric reference numbers (20-30 digits) used for deduplication.
 ## Notes & Extraction Details
 
 ### Note Field (36.5% capture rate)
+
 - Notes are **optional** - many transactions don't include them
 - Common notes extracted:
   - "salary" (42 occurrences)
@@ -155,42 +176,189 @@ Extracts long numeric reference numbers (20-30 digits) used for deduplication.
 - Extraction pattern: Text between "Note" label and "Bank reference no."
 
 ### General
+
 - Some older slips may have OCR errors due to image quality
 - The script stores raw OCR text for debugging/reprocessing
 - Duplicate detection uses transaction_ref as unique identifier
-- 13.4% of records still missing recipients (likely incomplete OCR or non-standard formats)
+- 13.4% of records still missing recipients (likely incomplete OCR or
+  non-standard formats)
 
 ## Troubleshooting
 
 ### Missing credentials error:
-Ensure Google Cloud credentials file path is correct in line 120 of `process_bbl_slips.ts`
+
+Ensure Google Cloud credentials file path is correct in line 120 of
+`process_bbl_slips.ts`
 
 ### Database connection errors:
+
 Verify SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables
 
 ### Thai names not captured:
+
 Updated version includes Thai alphabet support (ก-ฮะ-์)
 
 ## Additional Scripts
 
 ### `fill_missing_recipients.ts`
+
 Post-processing script to extract recipients from existing raw_text:
+
 - Runs advanced pattern matching on records missing recipients
 - Useful after bulk import to improve data quality
 - Successfully extracted 904 additional recipients (21.5% improvement)
 
 ### `fill_missing_notes.ts`
+
 Post-processing script to extract notes from existing raw_text:
+
 - Extracts note field from records where it was initially missed
 - Pattern: Text between "Note" label and reference numbers
 
+### `repair_with_google.ts`
+
+Targeted post-processing script that re-runs selected rows through Google Vision
+OCR and only fills missing fields:
+
+- Best used after a bulk Apple OCR import
+- Can scope to a batch prefix like `Batch2/`
+- Default repair targets: missing `recipient` and missing `amount_thb`
+- Optional `note` repair support via `--fields recipient,amount,note`
+- Supports `--dry-run true` to preview updates before writing
+
+Example:
+
+```bash
+export SUPABASE_URL="https://your-project.supabase.co"
+export SUPABASE_SERVICE_ROLE_KEY="your-service-role-key"
+export GOOGLE_APPLICATION_CREDENTIALS="/path/to/google-vision.json"
+
+npx ts-node --transpile-only --compiler-options '{"module":"commonjs"}' \
+  repair_with_google.ts \
+  --prefix "Batch2/" \
+  --fields recipient,amount \
+  --dry-run true
+```
+
+### `import_bbl_emails.ts`
+
+Bangkok Bank email importer for `.eml` files and Gmail:
+
+- Parses PromptPay top-up confirmation emails into `payment_slips`
+- Merges into existing rows by `bank_ref` or `email_message_id` when possible
+- Best used as the primary source for future imports
+- Works with local `.eml` files now, and Gmail API polling when OAuth env vars
+  are set
+
+Local `.eml` example:
+
+```bash
+export SUPABASE_URL="https://your-project.supabase.co"
+export SUPABASE_SERVICE_ROLE_KEY="your-service-role-key"
+
+npx ts-node --transpile-only --compiler-options '{"module":"commonjs"}' \
+  import_bbl_emails.ts \
+  --eml "/path/to/email.eml" \
+  --dry-run true
+```
+
+Gmail example:
+
+```bash
+export SUPABASE_URL="https://your-project.supabase.co"
+export SUPABASE_SERVICE_ROLE_KEY="your-service-role-key"
+export GMAIL_OAUTH_CLIENT_SECRET_FILE="/path/to/client_secret.json"
+export GMAIL_OAUTH_REFRESH_TOKEN="..."
+
+npx ts-node --transpile-only --compiler-options '{"module":"commonjs"}' \
+  import_bbl_emails.ts \
+  --gmail true \
+  --gmail-query 'from:BualuangmBanking@bangkokbank.com (subject:"ยืนยันการเติมเงินพร้อมเพย์ / PromptPay Top Up Confirmation" OR subject:"ยืนยันการชำระเงิน / Payments confirmation")' \
+  --limit 25 \
+  --dry-run true
+```
+
+Convenience runner that loads `.env` first:
+
+```bash
+./run_gmail_import.sh --limit 25 --dry-run true
+```
+
+One-time Gmail OAuth setup:
+
+```bash
+export GMAIL_OAUTH_CLIENT_SECRET_FILE="/path/to/client_secret.json"
+
+npx ts-node --transpile-only --compiler-options '{"module":"commonjs"}' \
+  setup_gmail_oauth.ts \
+  --client-secret-file "$GMAIL_OAUTH_CLIENT_SECRET_FILE"
+```
+
+The helper prints an approval URL, waits for the browser callback on
+`http://localhost`, then prints the `GMAIL_OAUTH_REFRESH_TOKEN` you should save
+for future Gmail imports.
+
+### Scheduled Gmail import with Supabase
+
+For production polling, this repo now includes a Supabase Edge Function at
+`supabase/functions/gmail-bank-slip-import/index.ts`.
+
+What it does:
+
+- Polls Gmail for Bangkok Bank payment emails on a rolling lookback window
+- Pages through all matching messages instead of only the latest fixed batch
+- Reuses the same merge strategy as the local importer via `email_message_id`
+  and `bank_ref`
+- Writes run history to `public.gmail_import_runs`
+
+Setup files:
+
+- Edge Function: `supabase/functions/gmail-bank-slip-import/index.ts`
+- SQL setup: `supabase/sql/gmail_bank_slip_import_setup.sql`
+
+Suggested function secrets:
+
+```bash
+supabase secrets set \
+  SUPABASE_URL="https://your-project.supabase.co" \
+  SUPABASE_SERVICE_ROLE_KEY="your-service-role-key" \
+  GMAIL_OAUTH_CLIENT_ID="..." \
+  GMAIL_OAUTH_CLIENT_SECRET="..." \
+  GMAIL_OAUTH_REFRESH_TOKEN="..." \
+  GMAIL_LOOKBACK_DAYS="7" \
+  GMAIL_PAGE_SIZE="100"
+```
+
+Optional hardening:
+
+- Set `FUNCTION_CRON_SECRET` as an Edge Function secret
+- Store the same value in Vault as `function_cron_secret`
+- The function will then require the `x-cron-secret` header from the cron job
+
+Deploy and schedule:
+
+```bash
+supabase functions deploy gmail-bank-slip-import
+```
+
+Then run the SQL in `supabase/sql/gmail_bank_slip_import_setup.sql` from the
+Supabase SQL Editor to:
+
+- create the `gmail_import_runs` table
+- enable `pg_cron` and `pg_net`
+- schedule the function every 5 minutes
+
 ### `get_counts.ts`, `get_recipient_stats.ts`, `get_note_stats.ts`
+
 Utility scripts for database statistics and analysis
 
 ### `analytics.html`
-**Interactive Analytics Dashboard** - Beautiful web interface for visualizing your transaction data:
+
+**Interactive Analytics Dashboard** - Beautiful web interface for visualizing
+your transaction data:
 
 **Features:**
+
 - 📊 **Bar graphs** for daily, monthly, and yearly spending
 - 👥 Top 10 recipients by total amount
 - 🏷️ Category breakdown by transaction notes
@@ -198,12 +366,14 @@ Utility scripts for database statistics and analysis
 - 🎨 Responsive design with gradient UI
 
 **How to use:**
+
 1. Open `analytics.html` in any web browser
 2. Enter your Supabase URL and Anon Key
 3. Click "Connect & Load Data"
 4. Explore interactive charts and statistics
 
 **Requirements:**
+
 - Supabase project with `payment_slips` table
 - Row Level Security (RLS) disabled on the table OR anon key with read access
 - Internet connection (loads Chart.js and Supabase client from CDN)
@@ -220,4 +390,5 @@ Utility scripts for database statistics and analysis
 - [ ] Automatic categorization based on recipients or notes
 
 ## Created
+
 October 2025 - Bangkok Bank slip digitization project

@@ -2,6 +2,8 @@
 *.json
 coco-gpt-tm30-*.json
 credentials.json
+!supabase/functions/**/deno.json
+!supabase/functions/**/deno.jsonc
 
 # Environment variables
 .env
@@ -16,8 +18,16 @@ bbl_process*.log
 
 # Personal data directories
 BangkokBankSlips/
+Batch2/
 slips/
 receipts/
+
+# Compiled OCR binaries
+.apple_vision_ocr
+
+# Supabase CLI runtime state
+supabase/.temp/
+supabase/.branches/
 
 # Node modules
 node_modules/
