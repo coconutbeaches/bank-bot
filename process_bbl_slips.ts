@@ -25,9 +25,13 @@ Notes:
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { createClient } from '@supabase/supabase-js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import FormData from 'form-data';
+
+const execFileAsync = promisify(execFile);
 
 type SlipRecord = {
   file_name: string;
@@ -75,7 +79,7 @@ function listImages(dir: string): string[] {
   for (const e of entries) {
     if (e.isFile()) {
       const ext = path.extname(e.name).toLowerCase();
-      if (ext === '.jpg' || ext === '.jpeg') files.push(path.join(dir, e.name));
+      if (ext === '.jpg' || ext === '.jpeg' || ext === '.png') files.push(path.join(dir, e.name));
     }
   }
   files.sort();
@@ -83,6 +87,33 @@ function listImages(dir: string): string[] {
 }
 
 function sleep(ms: number) { return new Promise(res => setTimeout(res, ms)); }
+
+export function parseAmountValue(raw: string): number | null {
+  const cleaned = raw.replace(/\s+/g, '');
+  if (!cleaned) return null;
+
+  const lastDot = cleaned.lastIndexOf('.');
+  const lastComma = cleaned.lastIndexOf(',');
+  const decimalIndex = Math.max(lastDot, lastComma);
+
+  if (decimalIndex > 0) {
+    const integerPart = cleaned.slice(0, decimalIndex).replace(/[^\d]/g, '');
+    const decimalPart = cleaned.slice(decimalIndex + 1).replace(/[^\d]/g, '');
+    if (!integerPart) return null;
+
+    const normalized = decimalPart
+      ? `${integerPart}.${decimalPart}`
+      : integerPart;
+    const parsed = Number(normalized);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+
+  const digitsOnly = cleaned.replace(/[^\d]/g, '');
+  if (!digitsOnly) return null;
+
+  const parsed = Number(digitsOnly);
+  return Number.isNaN(parsed) ? null : parsed;
+}
 
 async function createSupabase() {
   const url = process.env.SUPABASE_URL;
@@ -111,6 +142,34 @@ async function getExistingFilenames(supabase: SupabaseClient<any, 'public', any>
     for (const row of data as { file_name: string }[]) existing.add(row.file_name);
   }
   return existing;
+}
+
+async function findExistingRecordByRefs(
+  supabase: SupabaseClient<any, 'public', any>,
+  rec: SlipRecord
+) {
+  if (rec.transaction_ref) {
+    const { data, error } = await (supabase as any)
+      .from('payment_slips')
+      .select('*')
+      .eq('transaction_ref', rec.transaction_ref)
+      .limit(1);
+    if (error) throw error;
+    if (data?.[0]) return data[0];
+  }
+
+  if (rec.bank_ref) {
+    const { data, error } = await (supabase as any)
+      .from('payment_slips')
+      .select('*')
+      .eq('bank_ref', rec.bank_ref)
+      .order('id', { ascending: true })
+      .limit(1);
+    if (error) throw error;
+    if (data?.[0]) return data[0];
+  }
+
+  return null;
 }
 
 // Google OCR using Vision API
@@ -147,7 +206,15 @@ async function extractWithGoogleOcr(filePath: string, retries = 3): Promise<stri
   throw new Error('Max retries exceeded');
 }
 
-function parseSlipFromText(text: string, filename: string): SlipRecord {
+async function extractWithAppleVision(filePath: string, helperPath?: string): Promise<string> {
+  if (!helperPath) {
+    throw new Error('Apple Vision OCR requires --ocr-helper-path or OCR_HELPER_PATH');
+  }
+  const { stdout } = await execFileAsync(helperPath, [filePath], { maxBuffer: 10 * 1024 * 1024 });
+  return stdout.trim();
+}
+
+export function parseSlipFromText(text: string, filename: string): SlipRecord {
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   const full = lines.join('\n');
 
@@ -193,7 +260,19 @@ function parseSlipFromText(text: string, filename: string): SlipRecord {
           }
         } else if (m[2]) {
           // Has time component
-          date_time = m[1] + ' ' + m[2] + ':00';
+          const datePart = m[1];
+          const timePart = m[2];
+          const slashOrDashMatch = datePart.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+          if (slashOrDashMatch) {
+            let [, day, month, year] = slashOrDashMatch;
+            if (year.length === 2) {
+              const yr = parseInt(year, 10);
+              year = yr > 50 ? `19${year}` : `20${year}`;
+            }
+            date_time = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')} ${timePart}:00`;
+          } else {
+            date_time = `${datePart} ${timePart}:00`;
+          }
           break;
         } else {
           // Just date, no time
@@ -209,17 +288,17 @@ function parseSlipFromText(text: string, filename: string): SlipRecord {
 
   // Amount variations: "250.00 THB", "THB 250.00", "250 Baht", "Amount: 250.00"
   const amountRegexes: RegExp[] = [
-    /([0-9,]+\.?[0-9]*)\s*(?:THB|Baht|฿)/i,
-    /(?:THB|Baht|฿)\s*([0-9,]+\.?[0-9]*)/i,
-    /Amount[:\s]+([0-9,]+\.?[0-9]*)/i,
-    /Total[:\s]+([0-9,]+\.?[0-9]*)/i,
+    /Amount[:\s]+([0-9][0-9,.\s]*)/i,
+    /Total[:\s]+([0-9][0-9,.\s]*)/i,
+    /([0-9][0-9,. ]*)[ \t]*(?:THB|Baht|฿)/i,
+    /(?:THB|Baht|฿)[ \t]*([0-9][0-9,. ]*)/i,
   ];
   let amount_thb: number | null = null;
   for (const r of amountRegexes) {
     const m = full.match(r);
     if (m) {
-      const n = Number(m[1].replace(/,/g, ''));
-      if (!Number.isNaN(n) && n > 0) { amount_thb = n; break; }
+      const n = parseAmountValue(m[1]);
+      if (n != null && n > 0) { amount_thb = n; break; }
     }
   }
 
@@ -410,12 +489,51 @@ function parseSlipFromText(text: string, filename: string): SlipRecord {
   };
 }
 
-async function extractFromImage(filepath: string): Promise<SlipRecord> {
-  const text = await extractWithGoogleOcr(filepath);
-  return parseSlipFromText(text, path.basename(filepath));
+async function extractFromImage(
+  filepath: string,
+  storedFilename?: string,
+  ocrProvider = 'google',
+  ocrHelperPath?: string
+): Promise<SlipRecord> {
+  const text = ocrProvider === 'apple-vision'
+    ? await extractWithAppleVision(filepath, ocrHelperPath)
+    : await extractWithGoogleOcr(filepath);
+  return parseSlipFromText(text, storedFilename || path.basename(filepath));
 }
 
 async function insertRecord(supabase: SupabaseClient<any, 'public', any>, rec: SlipRecord) {
+  const existing = await findExistingRecordByRefs(supabase, rec);
+  if (existing) {
+    const update: Record<string, string | number | null> = {};
+
+    if ((!existing.date_time || existing.date_time === '') && rec.date_time) update.date_time = rec.date_time;
+    if (existing.amount_thb == null && rec.amount_thb != null) update.amount_thb = rec.amount_thb;
+    if ((!existing.sender || existing.sender === '') && rec.sender) update.sender = rec.sender;
+    if ((!existing.recipient || existing.recipient === '') && rec.recipient) update.recipient = rec.recipient;
+    if ((!existing.note || existing.note === '') && rec.note) update.note = rec.note;
+    if ((!existing.bank_ref || existing.bank_ref === '') && rec.bank_ref) update.bank_ref = rec.bank_ref;
+    if ((!existing.transaction_ref || existing.transaction_ref === '') && rec.transaction_ref) update.transaction_ref = rec.transaction_ref;
+    if ((!existing.raw_text || existing.raw_text === '') && rec.raw_text) update.raw_text = rec.raw_text;
+
+    if (existing.source_type === 'email') {
+      update.source_type = 'hybrid';
+    } else if (!existing.source_type) {
+      update.source_type = 'slip_image';
+    }
+
+    if (Object.keys(update).length > 0) {
+      const { data, error } = await (supabase as any)
+        .from('payment_slips')
+        .update(update)
+        .eq('id', existing.id)
+        .select();
+      if (error) throw error;
+      return data?.[0] as SlipRecord;
+    }
+
+    return existing as SlipRecord;
+  }
+
   const { data, error } = await (supabase as any)
     .from('payment_slips')
     .insert(rec)
@@ -429,23 +547,39 @@ async function main() {
   const dirArg = args.dir || process.env.SLIPS_DIRECTORY || '~/Desktop/BangkokBankSlips';
   const dir = expandHome(dirArg);
   const logEvery = Number(args.batch || 50);
+  const storeRelativePath = args['store-relative-path'] === 'true';
+  const outputJsonl = args['output-jsonl'] ? expandHome(args['output-jsonl']) : null;
+  const ocrProvider = args['ocr-provider'] || process.env.OCR_PROVIDER || 'google';
+  const ocrHelperPath = args['ocr-helper-path']
+    ? expandHome(args['ocr-helper-path'])
+    : process.env.OCR_HELPER_PATH;
 
   if (!(await fileExists(dir))) {
     console.error(`Directory not found: ${dir}`);
     process.exit(1);
   }
 
-  const supabase = await createSupabase();
-  await ensureTableExists();
+  const supabase = outputJsonl ? null : await createSupabase();
+  if (supabase) {
+    await ensureTableExists();
+  }
 
   const files = listImages(dir);
   if (files.length === 0) {
-    console.log('No .jpg/.jpeg files found.');
+    console.log('No .jpg/.jpeg/.png files found.');
     return;
   }
 
-  // Pre-fetch existing file_names to skip
-  const existing = await getExistingFilenames(supabase, files.map(f => path.basename(f)));
+  const storedFilenames = files.map(f => (
+    storeRelativePath ? path.relative(process.cwd(), f) : path.basename(f)
+  ));
+  const existing = supabase
+    ? await getExistingFilenames(supabase, storedFilenames)
+    : new Set<string>();
+
+  if (outputJsonl) {
+    await fs.promises.writeFile(outputJsonl, '');
+  }
 
   let processed = 0;
   let totalTHB = 0;
@@ -454,18 +588,20 @@ async function main() {
 
   for (const file of files) {
     const base = path.basename(file);
-    if (existing.has(base)) {
+    const storedFilename = storeRelativePath ? path.relative(process.cwd(), file) : base;
+    if (existing.has(storedFilename)) {
       processed++;
       continue;
     }
     try {
-      const rec = await extractFromImage(file);
-      const ins = await insertRecord(supabase, rec);
+      const rec = await extractFromImage(file, storedFilename, ocrProvider, ocrHelperPath);
+      if (outputJsonl) {
+        await fs.promises.appendFile(outputJsonl, JSON.stringify(rec) + '\n');
+      } else {
+        await insertRecord(supabase!, rec);
+      }
       insertedCount++;
-      if (ins && typeof ins.amount_thb === 'number') {
-        totalTHB += ins.amount_thb;
-        lastAmount = ins.amount_thb;
-      } else if (rec.amount_thb != null) {
+      if (rec.amount_thb != null) {
         totalTHB += rec.amount_thb;
         lastAmount = rec.amount_thb;
       }
@@ -481,6 +617,9 @@ async function main() {
   }
 
   console.log(`[Done] processed=${processed}, inserted=${insertedCount}, total_thb=${totalTHB.toFixed(2)}`);
+  if (outputJsonl) {
+    console.log(`[Output] jsonl=${outputJsonl}`);
+  }
 }
 
 // Polyfill fetch for Node < 18
@@ -491,7 +630,9 @@ if (typeof (global as any).fetch === 'undefined') {
   (global as any).fetch = undici.fetch;
 }
 
-main().catch(err => {
-  console.error(err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch(err => {
+    console.error(err);
+    process.exit(1);
+  });
+}
