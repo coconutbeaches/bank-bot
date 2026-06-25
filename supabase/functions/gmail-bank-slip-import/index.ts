@@ -52,11 +52,28 @@ type RunLogFinish = {
 
 const DEFAULT_GMAIL_QUERY =
   'from:BualuangmBanking@bangkokbank.com (subject:"ยืนยันการเติมเงินพร้อมเพย์ / PromptPay Top Up Confirmation" OR subject:"ยืนยันการชำระเงิน / Payments confirmation")';
+const EDGE_ADMIN_KEY_NAME = "edge_admin";
 
 function getRequiredEnv(name: string): string {
   const value = Deno.env.get(name);
   if (!value) throw new Error(`Missing ${name}`);
   return value;
+}
+
+function getEdgeAdminKey(): string {
+  const rawKeys = getRequiredEnv("SUPABASE_SECRET_KEYS");
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(rawKeys) as Record<string, unknown>;
+  } catch {
+    throw new Error("SUPABASE_SECRET_KEYS must be valid JSON");
+  }
+
+  const key = parsed[EDGE_ADMIN_KEY_NAME];
+  if (typeof key !== "string" || !key) {
+    throw new Error(`SUPABASE_SECRET_KEYS.${EDGE_ADMIN_KEY_NAME} is required`);
+  }
+  return key;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -512,7 +529,7 @@ async function listGmailSources(
 function createSupabaseAdminClient() {
   return createClient(
     getRequiredEnv("SUPABASE_URL"),
-    getRequiredEnv("SUPABASE_SERVICE_ROLE_KEY"),
+    getEdgeAdminKey(),
     {
       auth: {
         autoRefreshToken: false,
@@ -684,7 +701,9 @@ async function finishRunLog(
 
 function authorizeRequest(req: Request): Response | null {
   const expectedSecret = Deno.env.get("FUNCTION_CRON_SECRET");
-  if (!expectedSecret) return null;
+  if (!expectedSecret) {
+    return jsonResponse({ error: "server_misconfigured" }, 500);
+  }
   if (req.headers.get("x-cron-secret") === expectedSecret) return null;
   return jsonResponse({ error: "Unauthorized" }, 401);
 }
@@ -700,6 +719,11 @@ Deno.serve(async (req) => {
 
   const authError = authorizeRequest(req);
   if (authError) return authError;
+
+  const url = new URL(req.url);
+  if (url.searchParams.get("mode") === "canary") {
+    return jsonResponse({ ok: true, mode: "canary", auth: "cron_secret" });
+  }
 
   const body = req.headers.get("content-type")?.includes("application/json")
     ? await req.json().catch(() => ({}))
