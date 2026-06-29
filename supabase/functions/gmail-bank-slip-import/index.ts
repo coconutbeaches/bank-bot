@@ -52,7 +52,10 @@ type RunLogFinish = {
 
 const DEFAULT_GMAIL_QUERY =
   'from:BualuangmBanking@bangkokbank.com (subject:"ยืนยันการเติมเงินพร้อมเพย์ / PromptPay Top Up Confirmation" OR subject:"ยืนยันการชำระเงิน / Payments confirmation")';
-const EDGE_ADMIN_KEY_NAME = "edge_admin";
+// 2026-06 edge_admin rotation: prefer the new named key, fall back to the old
+// one so this is gap-free. Fallback: edge_admin_2026_06 ?? edge_admin.
+const EDGE_ADMIN_KEY_NAME = "edge_admin_2026_06";
+const EDGE_ADMIN_KEY_NAME_FALLBACKS = ["edge_admin"];
 
 function getRequiredEnv(name: string): string {
   const value = Deno.env.get(name);
@@ -69,11 +72,16 @@ function getEdgeAdminKey(): string {
     throw new Error("SUPABASE_SECRET_KEYS must be valid JSON");
   }
 
-  const key = parsed[EDGE_ADMIN_KEY_NAME];
-  if (typeof key !== "string" || !key) {
-    throw new Error(`SUPABASE_SECRET_KEYS.${EDGE_ADMIN_KEY_NAME} is required`);
+  for (const name of [EDGE_ADMIN_KEY_NAME, ...EDGE_ADMIN_KEY_NAME_FALLBACKS]) {
+    const key = parsed[name];
+    if (typeof key === "string" && key) {
+      if (name !== EDGE_ADMIN_KEY_NAME) {
+        console.warn(`edge_admin_key_fallback_used:${name}`);
+      }
+      return key;
+    }
   }
-  return key;
+  throw new Error(`SUPABASE_SECRET_KEYS.${EDGE_ADMIN_KEY_NAME} is required`);
 }
 
 function clamp(value: number, min: number, max: number): number {
